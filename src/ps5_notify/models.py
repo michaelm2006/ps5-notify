@@ -36,6 +36,10 @@ class TargetConfig:
     retailer_key: str
     url: str
     fetcher_backend: str = "http"
+    options: tuple[tuple[str, str], ...] = ()
+
+    def options_dict(self) -> dict[str, str]:
+        return dict(self.options)
 
 
 @dataclass(frozen=True)

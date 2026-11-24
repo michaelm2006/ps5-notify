@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,7 @@ from ps5_notify.retailers import get_adapter, list_adapter_keys
 
 VALID_FETCHER_BACKENDS = frozenset({"http", "playwright"})
 VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+VALID_ARGOS_FULFILMENT_MODES = frozenset({"either", "delivery", "collection"})
 DISCORD_WEBHOOK_HOSTS = frozenset(
     {
         "discord.com",
@@ -97,6 +99,19 @@ def _validate_http_url(url: str, key: str) -> str:
     return cleaned
 
 
+def _validate_argos_postcode(raw: str) -> str:
+    cleaned = re.sub(r"\s+", " ", raw.strip()).upper()
+    if not cleaned:
+        raise ConfigError(
+            "ARGOS_POSTCODE is required when 'argos' is enabled in ENABLED_RETAILERS "
+            "(set a UK postcode or town in .env, e.g. ARGOS_POSTCODE=SW1A 1AA, "
+            "or remove 'argos' from ENABLED_RETAILERS)."
+        )
+    if "YOUR_POSTCODE" in cleaned:
+        raise ConfigError("ARGOS_POSTCODE still contains a placeholder value from .env.example.")
+    return cleaned
+
+
 def load_settings(
     env_file: Path | None = None,
     *,
@@ -127,13 +142,13 @@ def load_settings(
     raw_mention = merged.get("DISCORD_MENTION", "").strip()
     discord_mention = raw_mention or None
 
-    default_fetcher = merged.get("FETCHER_BACKEND", "http").strip().lower() or "http"
-    if default_fetcher not in VALID_FETCHER_BACKENDS:
+    global_fetcher = merged.get("FETCHER_BACKEND", "").strip().lower()
+    if global_fetcher and global_fetcher not in VALID_FETCHER_BACKENDS:
         raise ConfigError(
-            f"FETCHER_BACKEND must be one of {sorted(VALID_FETCHER_BACKENDS)}, got {default_fetcher!r}"
+            f"FETCHER_BACKEND must be one of {sorted(VALID_FETCHER_BACKENDS)}, got {global_fetcher!r}"
         )
 
-    raw_retailers = merged.get("ENABLED_RETAILERS", "playstation_uk,argos").strip()
+    raw_retailers = merged.get("ENABLED_RETAILERS", "playstation_uk").strip()
     retailer_keys = [item.strip().lower() for item in raw_retailers.split(",") if item.strip()]
     if not retailer_keys:
         raise ConfigError("ENABLED_RETAILERS must specify at least one retailer.")
@@ -157,14 +172,41 @@ def load_settings(
         url = _validate_http_url(raw_url, url_env_key)
 
         fetcher_env_key = f"{retailer_key.upper()}_FETCHER"
-        fetcher_backend = merged.get(fetcher_env_key, "").strip().lower() or default_fetcher
+        fetcher_override = merged.get(fetcher_env_key, "").strip().lower()
+        fetcher_backend = fetcher_override or global_fetcher or adapter.default_fetcher
         if fetcher_backend not in VALID_FETCHER_BACKENDS:
             raise ConfigError(
                 f"{fetcher_env_key} must be one of {sorted(VALID_FETCHER_BACKENDS)}, "
                 f"got {fetcher_backend!r}"
             )
 
-        targets.append(TargetConfig(retailer_key=retailer_key, url=url, fetcher_backend=fetcher_backend))
+        target_options: list[tuple[str, str]] = []
+        if retailer_key == "argos":
+            postcode = _validate_argos_postcode(merged.get("ARGOS_POSTCODE", ""))
+            fulfilment_mode = (
+                merged.get("ARGOS_FULFILMENT_MODE", "either").strip().lower() or "either"
+            )
+            if fulfilment_mode not in VALID_ARGOS_FULFILMENT_MODES:
+                raise ConfigError(
+                    f"ARGOS_FULFILMENT_MODE must be one of {sorted(VALID_ARGOS_FULFILMENT_MODES)}, "
+                    f"got {fulfilment_mode!r}"
+                )
+            if fetcher_backend != "playwright":
+                raise ConfigError(
+                    "Argos postcode stock checks require Playwright (set ARGOS_FETCHER=playwright "
+                    "or unset FETCHER_BACKEND so Argos uses its Playwright default)."
+                )
+            target_options.append(("postcode", postcode))
+            target_options.append(("fulfilment_mode", fulfilment_mode))
+
+        targets.append(
+            TargetConfig(
+                retailer_key=retailer_key,
+                url=url,
+                fetcher_backend=fetcher_backend,
+                options=tuple(target_options),
+            )
+        )
 
     poll_interval = _parse_float(merged, "POLL_INTERVAL_SECONDS", 30.0, minimum=5.0)
     poll_jitter = _parse_float(merged, "POLL_JITTER_SECONDS", 5.0, minimum=0.0)

@@ -51,7 +51,7 @@ class ScriptedFetcher:
         self._responses = {url: list(items) for url, items in responses.items()}
         self.calls: list[str] = []
 
-    async def fetch(self, url: str) -> PageResponse:
+    async def fetch(self, url: str, *, on_page: Any = None) -> PageResponse:
         self.calls.append(url)
         queue = self._responses[url]
         item = queue.pop(0) if len(queue) > 1 else queue[0]
@@ -293,7 +293,12 @@ async def test_exponential_backoff_and_single_error_alert_with_reset(tmp_path: P
 async def test_run_forever_sends_startup_and_isolates_retailer_backoff(tmp_path: Path):
     clock = FakeClock(datetime(2026, 11, 24, 12, 0, 0, tzinfo=timezone.utc))
     ps_target = TargetConfig(retailer_key="playstation_uk", url=PS_URL)
-    argos_target = TargetConfig(retailer_key="argos", url=ARGOS_URL)
+    argos_target = TargetConfig(
+        retailer_key="argos",
+        url=ARGOS_URL,
+        fetcher_backend="playwright",
+        options=(("postcode", "SW1A 1AA"), ("fulfilment_mode", "either")),
+    )
     fetcher = ScriptedFetcher(
         {
             PS_URL: [FetchError("HTTP 403", status_code=403)],
@@ -304,7 +309,7 @@ async def test_run_forever_sends_startup_and_isolates_retailer_backoff(tmp_path:
     monitor = StockMonitor(
         settings=_settings(tmp_path, targets=(ps_target, argos_target)),
         state_store=StateStore(tmp_path / "state.json"),
-        fetchers={"http": fetcher},
+        fetchers={"http": fetcher, "playwright": fetcher},
         notifier=notifier,
         clock=clock,
         rng=random.Random(0),

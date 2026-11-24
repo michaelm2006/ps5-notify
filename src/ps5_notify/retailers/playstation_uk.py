@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 
 from bs4 import BeautifulSoup, Tag
 
@@ -51,8 +52,14 @@ class PlayStationUKAdapter(RetailerAdapter):
     key = "playstation_uk"
     display_name = "PlayStation UK"
     default_url = "https://www.playstation.com/en-gb/ps5/ps5-pro/buy-now/"
+    default_fetcher = "http"
 
-    def parse(self, response: PageResponse) -> CheckResult:
+    def parse(
+        self,
+        response: PageResponse,
+        *,
+        options: Mapping[str, str] | None = None,
+    ) -> CheckResult:
         soup = BeautifulSoup(response.html, "html.parser")
         products = extract_json_ld_products(soup)
         product_ld = products[0] if products else None

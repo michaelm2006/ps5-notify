@@ -16,7 +16,7 @@ def test_parse_retry_after_seconds():
 
 
 @pytest.mark.asyncio
-async def test_http_page_fetcher_success_and_error_handling():
+async def test_http_page_fetcher_success_error_and_on_page_rejection():
     url = "https://www.playstation.com/en-gb/ps5/ps5-pro/buy-now/"
     with respx.mock:
         respx.get(url).mock(
@@ -40,6 +40,12 @@ async def test_http_page_fetcher_success_and_error_handling():
             with pytest.raises(FetchError) as exc_403:
                 await fetcher.fetch(url)
             assert exc_403.value.status_code == 403
+
+            async def _noop(page):
+                return None
+
+            with pytest.raises(FetchError, match="Playwright"):
+                await fetcher.fetch(url, on_page=_noop)
         finally:
             await fetcher.close()
 
@@ -51,7 +57,10 @@ def test_cli_rejects_conflicting_flags():
 def test_cli_test_webhook_e2e(tmp_path):
     webhook = "https://discord.com/api/webhooks/123456/tokenvalue"
     env_file = tmp_path / ".env"
-    env_file.write_text(f"DISCORD_WEBHOOK_URL={webhook}\n", encoding="utf-8")
+    env_file.write_text(
+        f"DISCORD_WEBHOOK_URL={webhook}\nARGOS_POSTCODE=SW1A 1AA\n",
+        encoding="utf-8",
+    )
 
     with respx.mock:
         route = respx.post(webhook).mock(return_value=httpx.Response(204))

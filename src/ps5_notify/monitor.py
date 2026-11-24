@@ -106,7 +106,11 @@ class StockMonitor:
         now = self._clock()
 
         try:
-            result = await adapter.check(fetcher, target.url)
+            result = await adapter.check(
+                fetcher,
+                target.url,
+                options=target.options_dict(),
+            )
         except FetchError as exc:
             return await self._handle_error(
                 target=target,

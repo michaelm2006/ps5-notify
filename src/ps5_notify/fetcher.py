@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx
 
@@ -12,6 +13,8 @@ DEFAULT_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/131.0.0.0 Safari/537.36"
 )
+
+PageAction = Callable[[Any], Awaitable[None]]
 
 
 class FetchError(Exception):
@@ -40,7 +43,7 @@ class PageResponse:
 
 
 class PageFetcher(Protocol):
-    async def fetch(self, url: str) -> PageResponse: ...
+    async def fetch(self, url: str, *, on_page: PageAction | None = None) -> PageResponse: ...
 
     async def close(self) -> None: ...
 
@@ -92,7 +95,13 @@ class HttpPageFetcher:
             },
         )
 
-    async def fetch(self, url: str) -> PageResponse:
+    async def fetch(self, url: str, *, on_page: PageAction | None = None) -> PageResponse:
+        if on_page is not None:
+            raise FetchError(
+                f"Interactive browser step requested for {url}, but HTTP fetcher is active. "
+                "Switch this retailer to Playwright (e.g. ARGOS_FETCHER=playwright)."
+            )
+
         try:
             response = await self._client.get(url)
         except httpx.TimeoutException as exc:
@@ -122,7 +131,7 @@ class HttpPageFetcher:
 
 
 class PlaywrightPageFetcher:
-    """Optional headless-browser fetcher for retailers that require JS rendering.
+    """Headless-browser fetcher for retailers that require JS rendering or interactive checks.
 
     Requires optional dependency: `pip install '.[playwright]' && playwright install chromium`.
     """
@@ -153,11 +162,12 @@ class PlaywrightPageFetcher:
         self._browser = await self._playwright.chromium.launch(headless=True)
         return self._browser
 
-    async def fetch(self, url: str) -> PageResponse:
+    async def fetch(self, url: str, *, on_page: PageAction | None = None) -> PageResponse:
         browser = await self._ensure_browser()
         context = await browser.new_context(
             user_agent=self._user_agent,
             locale="en-GB",
+            viewport={"width": 1280, "height": 900},
         )
         page = await context.new_page()
         try:
@@ -179,11 +189,13 @@ class PlaywrightPageFetcher:
                     retry_after=retry_after,
                 )
 
-            # Give client-side buy-box widgets a brief moment to settle without stalling.
-            try:
-                await page.wait_for_load_state("networkidle", timeout=min(self._timeout_ms, 5000))
-            except Exception:
-                pass
+            if on_page is not None:
+                await on_page(page)
+            else:
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=min(self._timeout_ms, 5000))
+                except Exception:
+                    pass
 
             html = await page.content()
             return PageResponse(
